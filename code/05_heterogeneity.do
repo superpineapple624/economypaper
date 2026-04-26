@@ -57,7 +57,7 @@ label variable inst_hold "机构持股比例"
 local controls ln_cir_mktcap pb turnover leverage roa rd_intensity ///
     inst_hold
 
-* Use the sample median to build simple, paper-friendly groups.
+* Use the sample median to keep the original split-sample tables as supplements.
 quietly summarize ln_cir_mktcap if !missing(ln_cir_mktcap), detail
 local size_median = r(p50)
 gen byte large_size = (ln_cir_mktcap >= `size_median') if !missing(ln_cir_mktcap)
@@ -109,5 +109,88 @@ esttab info_pd_0 info_pd_1 using "$tables/heterogeneity_info.csv", ///
     replace csv label se nogaps nonumber noobs ///
     keep(did `controls') ///
     stats(N r2_a, labels("观测值" "调整后R方"))
+
+* Main heterogeneity tests: pre-treatment firm characteristics and full-sample
+* interactions. This avoids defining groups with post-treatment information.
+egen first_treat_month = min(cond(did == 1, month, .)), by(stk_id)
+gen byte pre_period = (month < first_treat_month) if !missing(first_treat_month)
+replace pre_period = 1 if missing(first_treat_month)
+
+egen pre_size_tmp = mean(ln_cir_mktcap) if pre_period == 1, by(stk_id)
+egen firm_pre_size = max(pre_size_tmp), by(stk_id)
+drop pre_size_tmp
+
+egen pre_info_tmp = mean(inst_hold) if pre_period == 1, by(stk_id)
+egen firm_pre_info = max(pre_info_tmp), by(stk_id)
+drop pre_info_tmp
+
+quietly summarize firm_pre_size if !missing(firm_pre_size), detail
+local pre_size_median = r(p50)
+gen byte large_size_pre = (firm_pre_size >= `pre_size_median') if !missing(firm_pre_size)
+label variable large_size_pre "Pre-treatment large size group"
+
+quietly summarize firm_pre_info if !missing(firm_pre_info), detail
+local pre_info_median = r(p50)
+gen byte high_info_pre = (firm_pre_info >= `pre_info_median') if !missing(firm_pre_info)
+label variable high_info_pre "Pre-treatment high transparency group"
+
+preserve
+    keep stk_id large_size_pre high_info_pre
+    duplicates drop
+    di as text "Firm counts by pre-treatment size group:"
+    tab large_size_pre, missing
+    di as text "Firm counts by pre-treatment transparency group:"
+    tab high_info_pre, missing
+restore
+
+eststo clear
+quietly reghdfe price_delay c.did##ib0.large_size_pre `controls' ///
+    if !missing(large_size_pre), absorb(stk_id month) vce(cluster stk_id)
+eststo size_interaction
+
+esttab size_interaction using "$tables/heterogeneity_interaction_size.rtf", ///
+    replace label se star(* 0.10 ** 0.05 *** 0.01) ///
+    title("Interaction test by pre-treatment firm size") ///
+    keep(did 1.large_size_pre#c.did `controls') ///
+    order(did 1.large_size_pre#c.did) ///
+    coeflabels(did "DID (small size group)" ///
+        1.large_size_pre#c.did "DID x pre-treatment large size group") ///
+    stats(N r2_a, labels("Observations" "Adjusted R-squared")) ///
+    nonotes addnotes("Clustered standard errors at the firm level in parentheses" ///
+        "*, **, and *** denote significance at the 10%, 5%, and 1% levels") ///
+    compress
+
+esttab size_interaction using "$tables/heterogeneity_interaction_size.csv", ///
+    replace csv label se nogaps nonumber noobs ///
+    keep(did 1.large_size_pre#c.did `controls') ///
+    order(did 1.large_size_pre#c.did) ///
+    coeflabels(did "DID (small size group)" ///
+        1.large_size_pre#c.did "DID x pre-treatment large size group") ///
+    stats(N r2_a, labels("Observations" "Adjusted R-squared"))
+
+eststo clear
+quietly reghdfe price_delay c.did##ib0.high_info_pre `controls' ///
+    if !missing(high_info_pre), absorb(stk_id month) vce(cluster stk_id)
+eststo info_interaction
+
+esttab info_interaction using "$tables/heterogeneity_interaction_info.rtf", ///
+    replace label se star(* 0.10 ** 0.05 *** 0.01) ///
+    title("Interaction test by pre-treatment information transparency") ///
+    keep(did 1.high_info_pre#c.did `controls') ///
+    order(did 1.high_info_pre#c.did) ///
+    coeflabels(did "DID (low transparency group)" ///
+        1.high_info_pre#c.did "DID x pre-treatment high transparency group") ///
+    stats(N r2_a, labels("Observations" "Adjusted R-squared")) ///
+    nonotes addnotes("Clustered standard errors at the firm level in parentheses" ///
+        "*, **, and *** denote significance at the 10%, 5%, and 1% levels") ///
+    compress
+
+esttab info_interaction using "$tables/heterogeneity_interaction_info.csv", ///
+    replace csv label se nogaps nonumber noobs ///
+    keep(did 1.high_info_pre#c.did `controls') ///
+    order(did 1.high_info_pre#c.did) ///
+    coeflabels(did "DID (low transparency group)" ///
+        1.high_info_pre#c.did "DID x pre-treatment high transparency group") ///
+    stats(N r2_a, labels("Observations" "Adjusted R-squared"))
 
 di as result "Saved heterogeneity tables to $tables"
